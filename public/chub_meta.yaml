@@ -38,4 +38,4 @@ config_schema:
       title: Intake Rate Multiplier
 
 github_path: 'https://github.com/porchmonkeymen/chub'
-
+extension_id:
