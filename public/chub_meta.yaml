@@ -36,3 +36,6 @@ config_schema:
       type: number
       default: 1.0
       title: Intake Rate Multiplier
+
+github_path: 'https://github.com/porchmonkeymen/chub'
+
