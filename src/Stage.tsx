@@ -1,205 +1,199 @@
-import {ReactElement} from "react";
-import {StageBase, StageResponse, InitialData, Message} from "@chub-ai/stages-ts";
-import {LoadResponse} from "@chub-ai/stages-ts/dist/types/load";
+import { ReactElement } from "react";
+import { StageBase, StageResponse, InitialData, Message } from "@chub-ai/stages-ts";
+import { LoadResponse } from "@chub-ai/stages-ts/dist/types/load";
 
-/***
- The type that this stage persists message-level state in.
- This is primarily for readability, and not enforced.
+type MessageStateType = {
+  obedience: number;
+  humiliation: number;
+  liquidIntake: number;
+  foodIntake: number;
+  arousal: number;
+  peeNeed: number;
+  poopNeed: number;
+  cumNeed: number;
+};
 
- @description This type is saved in the database after each message,
-  which makes it ideal for storing things like positions and statuses,
-  but not for things like history, which is best managed ephemerally
-  in the internal state of the Stage class itself.
- ***/
-type MessageStateType = any;
+type ConfigType = {
+  obedienceStart?: number;
+  humiliationStart?: number;
+  peeThreshold?: number;
+  poopThreshold?: number;
+  cumThreshold?: number;
+  intakeMultiplier?: number;
+};
 
-/***
- The type of the stage-specific configuration of this stage.
+type InitStateType = null;
+type ChatStateType = null;
 
- @description This is for things you want people to be able to configure,
-  like background color.
- ***/
-type ConfigType = any;
+const DRINK_WORDS = ["drink", "drinks", "drinking", "water", "beer", "wine", "soda", "piss", "pee", "urine", "liquid", "sip", "gulp", "chug"];
+const EAT_WORDS = ["eat", "eats", "eating", "ate", "food", "meal", "dinner", "lunch", "breakfast", "snack", "bite", "chew"];
+const AROUSAL_WORDS = ["aroused", "arousal", "horny", "hard", "erect", "erection", "wet", "dripping", "cock", "dick", "pussy", "clit", "cum", "cumming", "orgasm", "edge", "edging", "fuck", "fucking"];
+const SUBMIT_WORDS = ["yes", "obey", "sir", "ma'am", "sorry", "please", "submit", "good boy", "good girl", "i'll do it", "as you wish"];
+const RESIST_WORDS = ["no", "stop", "don't", "refuse", "won't", "can't", "not doing", "hell no"];
 
-/***
- The type that this stage persists chat initialization state in.
- If there is any 'constant once initialized' static state unique to a chat,
- like procedurally generated terrain that is only created ONCE and ONLY ONCE per chat,
- it belongs here.
- ***/
-type InitStateType = any;
-
-/***
- The type that this stage persists dynamic chat-level state in.
- This is for any state information unique to a chat,
-    that applies to ALL branches and paths such as clearing fog-of-war.
- It is usually unlikely you will need this, and if it is used for message-level
-    data like player health then it will enter an inconsistent state whenever
-    they change branches or jump nodes. Use MessageStateType for that.
- ***/
-type ChatStateType = any;
-
-/***
- A simple example class that implements the interfaces necessary for a Stage.
- If you want to rename it, be sure to modify App.js as well.
- @link https://github.com/CharHubAI/chub-stages-ts/blob/main/src/types/stage.ts
- ***/
 export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateType, ConfigType> {
+  private state: MessageStateType;
+  private config: Required<ConfigType>;
 
-    /***
-     A very simple example internal state. Can be anything.
-     This is ephemeral in the sense that it isn't persisted to a database,
-     but exists as long as the instance does, i.e., the chat page is open.
-     ***/
-    myInternalState: {[key: string]: any};
+  constructor(data: InitialData<InitStateType, ChatStateType, MessageStateType, ConfigType>) {
+    super(data);
+    const cfg = data.config || {};
+    this.config = {
+      obedienceStart: cfg.obedienceStart ?? 40,
+      humiliationStart: cfg.humiliationStart ?? 20,
+      peeThreshold: cfg.peeThreshold ?? 75,
+      poopThreshold: cfg.poopThreshold ?? 80,
+      cumThreshold: cfg.cumThreshold ?? 70,
+      intakeMultiplier: cfg.intakeMultiplier ?? 1.0,
+    };
 
-    constructor(data: InitialData<InitStateType, ChatStateType, MessageStateType, ConfigType>) {
-        /***
-         This is the first thing called in the stage,
-         to create an instance of it.
-         The definition of InitialData is at @link https://github.com/CharHubAI/chub-stages-ts/blob/main/src/types/initial.ts
-         Character at @link https://github.com/CharHubAI/chub-stages-ts/blob/main/src/types/character.ts
-         User at @link https://github.com/CharHubAI/chub-stages-ts/blob/main/src/types/user.ts
-         ***/
-        super(data);
-        const {
-            characters,         // @type:  { [key: string]: Character }
-            users,                  // @type:  { [key: string]: User}
-            config,                                 //  @type:  ConfigType
-            messageState,                           //  @type:  MessageStateType
-            environment,                     // @type: Environment (which is a string)
-            initState,                             // @type: null | InitStateType
-            chatState                              // @type: null | ChatStateType
-        } = data;
-        this.myInternalState = messageState != null ? messageState : {'someKey': 'someValue'};
-        this.myInternalState['numUsers'] = Object.keys(users).length;
-        this.myInternalState['numChars'] = Object.keys(characters).length;
+    this.state = data.messageState || {
+      obedience: this.config.obedienceStart,
+      humiliation: this.config.humiliationStart,
+      liquidIntake: 0,
+      foodIntake: 0,
+      arousal: 0,
+      peeNeed: 0,
+      poopNeed: 0,
+      cumNeed: 0,
+    };
+  }
+
+  async load(): Promise<Partial<LoadResponse<InitStateType, ChatStateType, MessageStateType>>> {
+    return { success: true, error: null, initState: null, chatState: null };
+  }
+
+  async setState(state: MessageStateType): Promise<void> {
+    if (state) this.state = { ...this.state, ...state };
+  }
+
+  private countMatches(text: string, words: string[]): number {
+    const lower = text.toLowerCase();
+    return words.reduce((acc, w) => acc + (lower.split(w).length - 1), 0);
+  }
+
+  private clamp(n: number, min = 0, max = 100) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  private updateFromText(text: string, isUser: boolean) {
+    const m = this.config.intakeMultiplier;
+    const drinks = this.countMatches(text, DRINK_WORDS);
+    const eats = this.countMatches(text, EAT_WORDS);
+    const aroused = this.countMatches(text, AROUSAL_WORDS);
+    const submits = this.countMatches(text, SUBMIT_WORDS);
+    const resists = this.countMatches(text, RESIST_WORDS);
+
+    if (isUser) {
+      this.state.liquidIntake += drinks * 8 * m;
+      this.state.foodIntake += eats * 10 * m;
+      this.state.arousal += aroused * 6 * m;
+      this.state.obedience = this.clamp(this.state.obedience + submits * 4 - resists * 5);
+      this.state.humiliation = this.clamp(this.state.humiliation + resists * 3 - submits * 1);
+    } else {
+      // Bot replies can also raise arousal / needs slightly
+      this.state.arousal += aroused * 3 * m;
     }
 
-    async load(): Promise<Partial<LoadResponse<InitStateType, ChatStateType, MessageStateType>>> {
-        /***
-         This is called immediately after the constructor, in case there is some asynchronous code you need to
-         run on instantiation.
-         ***/
-        return {
-            /*** @type boolean @default null
-             @description The 'success' boolean returned should be false IFF (if and only if), some condition is met that means
-              the stage shouldn't be run at all and the iFrame can be closed/removed.
-              For example, if a stage displays expressions and no characters have an expression pack,
-              there is no reason to run the stage, so it would return false here. ***/
-            success: true,
-            /*** @type null | string @description an error message to show
-             briefly at the top of the screen, if any. ***/
-            error: null,
-            initState: null,
-            chatState: null,
-        };
+    // Convert intake into needs (slow passive rise + intake spike)
+    this.state.peeNeed = this.clamp(this.state.peeNeed + 1.2 + drinks * 6 * m);
+    this.state.poopNeed = this.clamp(this.state.poopNeed + 0.6 + eats * 7 * m);
+    this.state.cumNeed = this.clamp(this.state.cumNeed + 0.8 + aroused * 5 * m);
+  }
+
+  private buildDirections(): string | null {
+    const s = this.state;
+    const parts: string[] = [];
+
+    if (s.obedience >= 70) {
+      parts.push("The user is highly obedient. Be extremely dominant, controlling, and casually humiliating. Treat their compliance as expected.");
+    } else if (s.obedience <= 30) {
+      parts.push("The user is resisting. Be colder, more mocking, and punish non-compliance. Make them regret it.");
+    } else {
+      parts.push("Maintain a firm, dominant tone. Reward small compliance and mock hesitation.");
     }
 
-    async setState(state: MessageStateType): Promise<void> {
-        /***
-         This can be called at any time, typically after a jump to a different place in the chat tree
-         or a swipe. Note how neither InitState nor ChatState are given here. They are not for
-         state that is affected by swiping.
-         ***/
-        if (state != null) {
-            this.myInternalState = {...this.myInternalState, ...state};
-        }
+    if (s.humiliation >= 60) {
+      parts.push("The user is already deeply humiliated. Lean into it.");
     }
 
-    async beforePrompt(userMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
-        /***
-         This is called after someone presses 'send', but before anything is sent to the LLM.
-         ***/
-        const {
-            content,            /*** @type: string
-             @description Just the last message about to be sent. ***/
-            anonymizedId,       /*** @type: string
-             @description An anonymized ID that is unique to this individual
-              in this chat, but NOT their Chub ID. ***/
-            isBot             /*** @type: boolean
-             @description Whether this is itself from another bot, ex. in a group chat. ***/
-        } = userMessage;
-        return {
-            /*** @type null | string @description A string to add to the
-             end of the final prompt sent to the LLM,
-             but that isn't persisted. ***/
-            stageDirections: null,
-            /*** @type MessageStateType | null @description the new state after the userMessage. ***/
-            messageState: {'someKey': this.myInternalState['someKey']},
-            /*** @type null | string @description If not null, the user's message itself is replaced
-             with this value, both in what's sent to the LLM and in the database. ***/
-            modifiedMessage: null,
-            /*** @type null | string @description A system message to append to the end of this message.
-             This is unique in that it shows up in the chat log and is sent to the LLM in subsequent messages,
-             but it's shown as coming from a system user and not any member of the chat. If you have things like
-             computed stat blocks that you want to show in the log, but don't want the LLM to start trying to
-             mimic/output them, they belong here. ***/
-            systemMessage: null,
-            /*** @type null | string @description an error message to show
-             briefly at the top of the screen, if any. ***/
-            error: null,
-            chatState: null,
-        };
+    if (s.peeNeed >= this.config.peeThreshold) {
+      parts.push("URGENT: You need to urinate badly. You must address this soon — go to the bathroom, hold it, make the user watch, or force them to help. Do not ignore the pressure in your bladder.");
+    }
+    if (s.poopNeed >= this.config.poopThreshold) {
+      parts.push("URGENT: You need to defecate. You must address the bowel pressure soon. Go to the toilet, make the user wait, or involve them in the humiliation of it.");
+    }
+    if (s.cumNeed >= this.config.cumThreshold) {
+      parts.push("URGENT: You are extremely aroused and need to ejaculate. Address the need — edge, force the user to help, or finally cum. Do not pretend you aren't rock hard / dripping.");
     }
 
-    async afterResponse(botMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
-        /***
-         This is called immediately after a response from the LLM.
-         ***/
-        const {
-            content,            /*** @type: string
-             @description The LLM's response. ***/
-            anonymizedId,       /*** @type: string
-             @description An anonymized ID that is unique to this individual
-              in this chat, but NOT their Chub ID. ***/
-            isBot             /*** @type: boolean
-             @description Whether this is from a bot, conceivably always true. ***/
-        } = botMessage;
-        return {
-            /*** @type null | string @description A string to add to the
-             end of the final prompt sent to the LLM,
-             but that isn't persisted. ***/
-            stageDirections: null,
-            /*** @type MessageStateType | null @description the new state after the botMessage. ***/
-            messageState: {'someKey': this.myInternalState['someKey']},
-            /*** @type null | string @description If not null, the bot's response itself is replaced
-             with this value, both in what's sent to the LLM subsequently and in the database. ***/
-            modifiedMessage: null,
-            /*** @type null | string @description an error message to show
-             briefly at the top of the screen, if any. ***/
-            error: null,
-            systemMessage: null,
-            chatState: null
-        };
-    }
+    return parts.length ? parts.join(" ") : null;
+  }
 
+  async beforePrompt(userMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
+    this.updateFromText(userMessage.content, true);
+    const directions = this.buildDirections();
 
-    render(): ReactElement {
-        /***
-         There should be no "work" done here. Just returning the React element to display.
-         If you're unfamiliar with React and prefer video, I've heard good things about
-         @link https://scrimba.com/learn/learnreact but haven't personally watched/used it.
+    return {
+      stageDirections: directions,
+      messageState: { ...this.state },
+      modifiedMessage: null,
+      systemMessage: null,
+      error: null,
+      chatState: null,
+    };
+  }
 
-         For creating 3D and game components, react-three-fiber
-           @link https://docs.pmnd.rs/react-three-fiber/getting-started/introduction
-           and the associated ecosystem of libraries are quite good and intuitive.
+  async afterResponse(botMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
+    this.updateFromText(botMessage.content, false);
 
-         Cuberun is a good example of a game built with them.
-           @link https://github.com/akarlsten/cuberun (Source)
-           @link https://cuberun.adamkarlsten.com/ (Demo)
-         ***/
-        return <div style={{
-            width: '100vw',
-            height: '100vh',
-            display: 'grid',
-            alignItems: 'stretch'
-        }}>
-            <div>Hello World! I'm an empty stage! With {this.myInternalState['someKey']}!</div>
-            <div>There is/are/were {this.myInternalState['numChars']} character(s)
-                and {this.myInternalState['numUsers']} human(s) here.
-            </div>
-        </div>;
-    }
+    // Optional: if a need is critical, append a visible system note
+    let system: string | null = null;
+    if (this.state.peeNeed >= this.config.peeThreshold + 10) system = "[Bladder is at critical levels]";
+    else if (this.state.poopNeed >= this.config.poopThreshold + 10) system = "[Bowels are at critical levels]";
+    else if (this.state.cumNeed >= this.config.cumThreshold + 10) system = "[Arousal is at critical levels]";
 
+    return {
+      stageDirections: null,
+      messageState: { ...this.state },
+      modifiedMessage: null,
+      systemMessage: system,
+      error: null,
+      chatState: null,
+    };
+  }
+
+  render(): ReactElement {
+    const s = this.state;
+    const bar = (label: string, value: number, color: string) => (
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 12, marginBottom: 2 }}>{label}: {Math.round(value)}</div>
+        <div style={{ height: 14, background: "#222", borderRadius: 4, overflow: "hidden" }}>
+          <div style={{ width: `${value}%`, height: "100%", background: color, transition: "width 0.3s" }} />
+        </div>
+      </div>
+    );
+
+    return (
+      <div style={{
+        padding: 12,
+        fontFamily: "system-ui, sans-serif",
+        color: "#eee",
+        background: "#111",
+        height: "100%",
+        boxSizing: "border-box",
+        overflowY: "auto",
+      }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 16 }}>Obedience & Needs</h3>
+        {bar("Obedience", s.obedience, "#4ade80")}
+        {bar("Humiliation", s.humiliation, "#f87171")}
+        {bar("Pee Need", s.peeNeed, "#60a5fa")}
+        {bar("Poop Need", s.poopNeed, "#a78bfa")}
+        {bar("Cum Need", s.cumNeed, "#f472b6")}
+        <div style={{ fontSize: 11, opacity: 0.7, marginTop: 12 }}>
+          Liquid intake: {Math.round(s.liquidIntake)} · Food: {Math.round(s.foodIntake)} · Arousal: {Math.round(s.arousal)}
+        </div>
+      </div>
+    );
+  }
 }
